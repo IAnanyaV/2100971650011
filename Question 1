@@ -1,0 +1,55 @@
+from fastapi import FastAPI, HTTPException
+from typing import List
+import httpx
+import asyncio
+
+app = FastAPI()
+
+
+WINDOW_SIZE = 10
+TIMEOUT = 0.5  
+THIRD_PARTY_API = "https://third-party-server.com/api"  
+
+
+numbers_window = []
+
+def is_qualified_id(number_id: str) -> bool:
+    return number_id in ('p', 'f', 'e', 'r')
+
+async def fetch_numbers(number_id: str) -> List[int]:
+    url = f"{THIRD_PARTY_API}/{number_id}"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=TIMEOUT)
+            response.raise_for_status()
+            return response.json()
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        return []
+
+@app.get("/numbers/{number_id}")
+async def get_numbers(number_id: str):
+    if not is_qualified_id(number_id):
+        raise HTTPException(status_code=400, detail="Invalid number ID")
+
+    prev_state = numbers_window.copy()
+    fetched_numbers = await fetch_numbers(number_id)
+    
+    # Ensure numbers are unique
+    for num in fetched_numbers:
+        if num not in numbers_window:
+            if len(numbers_window) >= WINDOW_SIZE:
+                numbers_window.pop(0)  # Remove the oldest number
+            numbers_window.append(num)
+
+    if len(numbers_window) == 0:
+        avg = 0.0
+    else:
+        avg = sum(numbers_window) / len(numbers_window)
+
+    response = {
+        "windowPrevState": prev_state,
+        "windowCurrState": numbers_window,
+        "numbers": fetched_numbers,
+        "avg": round(avg, 2)
+    }
+    return response
