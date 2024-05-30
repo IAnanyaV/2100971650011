@@ -1,55 +1,52 @@
-from fastapi import FastAPI, HTTPException
-from typing import List
-import httpx
-import asyncio
+from flask import Flask, jsonify, request
+import requests
+from collections import deque
+import threading
 
-app = FastAPI()
-
+app = Flask(_name_)
 
 WINDOW_SIZE = 10
-TIMEOUT = 0.5  
-THIRD_PARTY_API = "https://third-party-server.com/api"  
+numbers_window = deque(maxlen=WINDOW_SIZE)
+lock = threading.Lock()
 
-
-numbers_window = []
-
-def is_qualified_id(number_id: str) -> bool:
-    return number_id in ('p', 'f', 'e', 'r')
-
-async def fetch_numbers(number_id: str) -> List[int]:
-    url = f"{THIRD_PARTY_API}/{number_id}"
+def fetch_numbers_from_api(numberid):
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, timeout=TIMEOUT)
-            response.raise_for_status()
-            return response.json()
-    except (httpx.RequestError, httpx.HTTPStatusError):
+        response = requests.get(f'http://thirdpartyserver/api/{numberid}', timeout=0.5)
+        response.raise_for_status()
+        numbers = response.json().get('numbers', [])
+        return numbers
+    except (requests.exceptions.RequestException, ValueError):
         return []
 
-@app.get("/numbers/{number_id}")
-async def get_numbers(number_id: str):
-    if not is_qualified_id(number_id):
-        raise HTTPException(status_code=400, detail="Invalid number ID")
+def calculate_average(numbers):
+    if not numbers:
+        return 0.0
+    return sum(numbers) / len(numbers)
 
-    prev_state = numbers_window.copy()
-    fetched_numbers = await fetch_numbers(number_id)
+@app.route('/numbers/<numberid>', methods=['GET'])
+def get_numbers(numberid):
+    if numberid not in {'p', 'f', 'e', 'r'}:
+        return jsonify({"error": "Invalid number ID"}), 400
     
-    # Ensure numbers are unique
-    for num in fetched_numbers:
-        if num not in numbers_window:
-            if len(numbers_window) >= WINDOW_SIZE:
-                numbers_window.pop(0)  # Remove the oldest number
-            numbers_window.append(num)
-
-    if len(numbers_window) == 0:
-        avg = 0.0
-    else:
-        avg = sum(numbers_window) / len(numbers_window)
-
+    with lock:
+        window_prev_state = list(numbers_window)
+        
+        new_numbers = fetch_numbers_from_api(numberid)
+        for number in new_numbers:
+            if number not in numbers_window:
+                numbers_window.append(number)
+        
+        window_curr_state = list(numbers_window)
+        average = calculate_average(numbers_window)
+    
     response = {
-        "windowPrevState": prev_state,
-        "windowCurrState": numbers_window,
-        "numbers": fetched_numbers,
-        "avg": round(avg, 2)
+        "windowPrevState": window_prev_state,
+        "windowCurrState": window_curr_state,
+        "numbers": new_numbers,
+        "avg": round(average, 2)
     }
-    return response
+    
+    return jsonify(response)
+
+if _name_ == '_main_':
+    app.run(port=9876)
